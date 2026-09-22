@@ -74,13 +74,31 @@ async def _validate_url_async(url: str) -> str:
     return url
 
 
+def resolve_local_reference(ref: str) -> Path:
+    prefix = "local-ref://"
+    if not isinstance(ref, str) or not ref.startswith(prefix):
+        raise ValueError("Invalid local reference image")
+    name = ref.removeprefix(prefix)
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise ValueError("Invalid local reference image identifier")
+    root = Path(config.REFERENCE_UPLOAD_DIR).resolve()
+    path = (root / name).resolve()
+    if path.parent != root or not path.is_file():
+        raise ValueError("Uploaded reference image no longer exists")
+    return path
+
+
 async def validate_reference_urls(urls: list[str]) -> list[str]:
     if len(urls) > config.REFERENCE_IMAGE_MAX_COUNT:
         raise ValueError(f"Maximum of {config.REFERENCE_IMAGE_MAX_COUNT} reference images allowed")
     normalized = []
     seen = set()
     for raw in urls:
-        url = await _validate_url_async(raw)
+        if isinstance(raw, str) and raw.startswith("local-ref://"):
+            resolve_local_reference(raw)
+            url = raw
+        else:
+            url = await _validate_url_async(raw)
         if url not in seen:
             normalized.append(url)
             seen.add(url)
@@ -154,7 +172,13 @@ async def download_reference_images(urls: list[str], task_id: str) -> tuple[Path
         async with aiohttp.ClientSession() as session:
             paths = []
             for index, url in enumerate(urls):
-                paths.append(str(await download_one_image(session, url, root / f"image_{index}")))
+                if url.startswith("local-ref://"):
+                    source = resolve_local_reference(url)
+                    target = root / f"image_{index}{source.suffix.lower()}"
+                    target.write_bytes(source.read_bytes())
+                    paths.append(str(target))
+                else:
+                    paths.append(str(await download_one_image(session, url, root / f"image_{index}")))
         return root, paths
     except Exception:
         for child in root.glob("*"):

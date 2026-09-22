@@ -26,15 +26,17 @@ import json
 import re
 import secrets
 import shutil
+from io import BytesIO
 import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel, Field
 
 import config
@@ -299,6 +301,45 @@ def _resolve_ratio(size, ratio):
     if size and size in SIZE_TO_RATIO:
         return SIZE_TO_RATIO[size]
     return ratio
+
+
+def _save_uploaded_reference(filename: str, data: bytes) -> str:
+    if not data or len(data) > config.REFERENCE_IMAGE_MAX_BYTES:
+        raise ValueError("Ảnh tải lên rỗng hoặc vượt quá 15MB")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+            image_format = image.format
+    except Exception as exc:
+        raise ValueError("Tệp tải lên không phải ảnh hợp lệ") from exc
+    suffixes = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+    if image_format not in suffixes:
+        raise ValueError("Chỉ hỗ trợ ảnh JPEG, PNG hoặc WEBP")
+    root = Path(config.REFERENCE_UPLOAD_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()
+    stored_name = f"{digest}{suffixes[image_format]}"
+    target = root / stored_name
+    if not target.exists():
+        target.write_bytes(data)
+    return f"local-ref://{stored_name}"
+
+
+@app.post("/api/reference-images")
+async def upload_reference_images(files: list[UploadFile] = File(...)):
+    if not files or len(files) > config.REFERENCE_IMAGE_MAX_COUNT:
+        raise HTTPException(422, f"Tải lên từ 1 đến {config.REFERENCE_IMAGE_MAX_COUNT} ảnh")
+    references = []
+    try:
+        for uploaded in files:
+            data = await uploaded.read(config.REFERENCE_IMAGE_MAX_BYTES + 1)
+            references.append(_save_uploaded_reference(uploaded.filename or "image", data))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        for uploaded in files:
+            await uploaded.close()
+    return {"references": references}
 
 
 async def _run_task(task_id, model, prompt, ratio, duration, reference_images, client):

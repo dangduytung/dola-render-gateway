@@ -814,7 +814,7 @@ tr:hover td { background: var(--color-paper-hover); }
         </div>
 
         <!-- Model Selector (Segmented Pills) -->
-        <div class="form-group">
+        <div id="single_model_options" class="form-group">
           <div class="form-label"><span>Mô hình Video AI</span></div>
           <div class="pill-group" id="modelPillGroup">
             <div class="pill-btn active" data-val="seedance-2.5" onclick="selectModelPill('seedance-2.5')">
@@ -842,7 +842,7 @@ tr:hover td { background: var(--color-paper-hover); }
             </select>
           </div>
 
-          <div>
+          <div id="single_duration_options">
             <div class="form-label"><span>Thời lượng</span></div>
             <select id="gen_duration" class="form-control" onchange="updateApiPayloadPreview()">
               <option value="10" selected>10 giây (Tiêu chuẩn)</option>
@@ -864,8 +864,8 @@ tr:hover td { background: var(--color-paper-hover); }
             </div>
           </div>
 
-          <div style="display:flex;gap:8px">
-            <input id="gen_ref_input" class="form-control" placeholder="Dán URL ảnh (https://...jpg, png, webp) rồi nhấn Thêm hoặc Enter" onkeydown="if(event.key==='Enter'){event.preventDefault();addRefImage()}">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id="gen_ref_input" style="flex:1;min-width:240px" class="form-control" placeholder="Dán URL ảnh (https://...jpg, png, webp) rồi nhấn Thêm hoặc Enter" onkeydown="if(event.key==='Enter'){event.preventDefault();addRefImage()}">
             <button type="button" class="btn btn-p" onclick="addRefImage()" style="white-space:nowrap;padding:0 16px;gap:6px">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               Thêm ảnh
@@ -874,6 +874,8 @@ tr:hover td { background: var(--color-paper-hover); }
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
               Dán nhiều link
             </button>
+            <input id="gen_ref_files" type="file" accept="image/jpeg,image/png,image/webp" multiple style="display:none" onchange="uploadReferenceFiles(this.files)">
+            <button type="button" class="btn" onclick="q('#gen_ref_files').click()" title="Chọn ảnh trực tiếp từ máy" style="white-space:nowrap;padding:0 14px;gap:6px">↑ Tải ảnh lên</button>
           </div>
 
           <!-- Reference Images Grid Display -->
@@ -1450,6 +1452,8 @@ function updatePromptCount() {
 function toggleGenerationMode() {
   const isSequence = q('#generation_mode').value === 'sequence';
   q('#sequence_options').style.display = isSequence ? 'block' : 'none';
+  q('#single_model_options').style.display = isSequence ? 'none' : 'block';
+  q('#single_duration_options').style.display = isSequence ? 'none' : 'block';
   q('#gen_prompt_label').innerHTML = isSequence
     ? 'Prompt chung / khóa nhất quán'
     : 'Mô tả cảnh quay (Prompt) <span style="color:var(--color-danger)">*</span>';
@@ -1586,11 +1590,13 @@ function renderRefImages() {
   }
 
   container.innerHTML = referenceImagesList.map((url, idx) => {
-    let domain = 'image';
-    try { domain = new URL(url).hostname; } catch(e) {}
+    const isUploaded = url.startsWith('local-ref://');
+    const displayUrl = isUploaded ? `/videos/reference_uploads/${encodeURIComponent(url.slice('local-ref://'.length))}` : url;
+    let domain = isUploaded ? 'Ảnh tải lên' : 'image';
+    try { if (!isUploaded) domain = new URL(url).hostname; } catch(e) {}
     return `
       <div class="ref-thumb-card">
-        <img src="${esc(url)}" alt="Ref ${idx+1}" onerror="this.style.display='none';const fb=this.parentElement.querySelector('.ref-fallback-icon');if(fb)fb.style.display='flex';" style="width:38px;height:38px;border-radius:6px;object-fit:cover;border:1px solid var(--color-rule);flex-shrink:0;background:var(--color-paper-3)">
+        <img src="${esc(displayUrl)}" alt="Ref ${idx+1}" onerror="this.style.display='none';const fb=this.parentElement.querySelector('.ref-fallback-icon');if(fb)fb.style.display='flex';" style="width:38px;height:38px;border-radius:6px;object-fit:cover;border:1px solid var(--color-rule);flex-shrink:0;background:var(--color-paper-3)">
         <div class="ref-fallback-icon" style="display:none;width:38px;height:38px;border-radius:6px;border:1px solid var(--color-rule);background:var(--color-paper-3);align-items:center;justify-content:center;color:var(--color-ink-3);font-size:10px;font-weight:600;flex-shrink:0">IMG</div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">
@@ -1604,6 +1610,34 @@ function renderRefImages() {
     `;
   }).join('');
   updateApiPayloadPreview();
+}
+
+async function uploadReferenceFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  if (referenceImagesList.length + files.length > 30) {
+    q('#gen_ref_files').value = '';
+    return toast('Tổng số ảnh tham chiếu không được vượt quá 30.', 'error');
+  }
+  const form = new FormData();
+  files.forEach(file => form.append('files', file));
+  try {
+    toast(`Đang tải lên ${files.length} ảnh...`, 'info');
+    const response = await fetch('/api/reference-images', {
+      method: 'POST', credentials: 'include', body: form
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Tải ảnh thất bại');
+    for (const ref of data.references || []) {
+      if (!referenceImagesList.includes(ref)) referenceImagesList.push(ref);
+    }
+    renderRefImages();
+    toast(`Đã tải lên ${files.length} ảnh tham chiếu.`, 'success');
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    q('#gen_ref_files').value = '';
+  }
 }
 
 function addRefImage() {

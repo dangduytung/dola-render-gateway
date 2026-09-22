@@ -62,13 +62,51 @@ class VideoSequenceContractTests(unittest.TestCase):
         html = Path("web/index.html").read_text(encoding="utf-8")
         for marker in (
             'id="generation_mode"',
+            'id="single_model_options"',
+            'id="single_duration_options"',
             'id="sequence_segments"',
             'id="sequence_continuity"',
             'id="sequence_output_mode"',
+            'id="gen_ref_files"',
+            "uploadReferenceFiles(",
             "addSequenceSegment()",
+            "/api/reference-images",
             "/v1/video-sequences",
         ):
             self.assertIn(marker, html)
+
+    def test_local_reference_ids_are_accepted_without_public_url_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "safe-image.jpg").write_bytes(b"image")
+            with patch.object(server.config, "REFERENCE_UPLOAD_DIR", tmp):
+                refs = asyncio.run(server.validate_reference_urls(["local-ref://safe-image.jpg"]))
+        self.assertEqual(refs, ["local-ref://safe-image.jpg"])
+
+    def test_local_reference_ids_reject_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(server.config, "REFERENCE_UPLOAD_DIR", tmp):
+                with self.assertRaises(ValueError):
+                    asyncio.run(server.validate_reference_urls(["local-ref://../secret.jpg"]))
+
+    def test_uploaded_image_validator_writes_verified_image(self):
+        from io import BytesIO
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = BytesIO()
+            Image.new("RGB", (4, 4), "red").save(image, format="PNG")
+            with patch.object(server.config, "REFERENCE_UPLOAD_DIR", tmp):
+                ref = server._save_uploaded_reference("sample.png", image.getvalue())
+                saved = Path(tmp) / ref.removeprefix("local-ref://")
+
+            self.assertTrue(saved.exists())
+            self.assertEqual(saved.suffix, ".png")
+
+    def test_uploaded_image_validator_rejects_non_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(server.config, "REFERENCE_UPLOAD_DIR", tmp):
+                with self.assertRaises(ValueError):
+                    server._save_uploaded_reference("fake.png", b"not an image")
 
 
 class VideoSequenceMediaTests(unittest.IsolatedAsyncioTestCase):
