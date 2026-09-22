@@ -69,8 +69,8 @@ async ({prompt, ratio, duration, msToken, fp}) => {
   };
 
   const params = new URLSearchParams({
-    aid: "495671", channel: "g", device_platform: "web", language: "zh-Hant",
-    region: "JP", sys_region: "JP", samantha_web: "1", "use-olympus-account": "1",
+    aid: "495671", channel: "g", device_platform: "web", language: "vi",
+    region: "VN", sys_region: "VN", samantha_web: "1", "use-olympus-account": "1",
     version_code: "20800", web_platform: "browser", web_tab_id: uuid(),
   });
   if (msToken) params.set("msToken", msToken);

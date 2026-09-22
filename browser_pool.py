@@ -103,8 +103,8 @@ class BrowserPool:
         try:
             tz = ZoneInfo(config.LIMIT_RESET_TZ)
         except Exception:
-            offsets = {"Asia/Tokyo": 9, "Asia/Hong_Kong": 8, "UTC": 0}
-            tz = timezone(timedelta(hours=offsets.get(config.LIMIT_RESET_TZ, 9)))
+            offsets = {"Asia/Ho_Chi_Minh": 7, "Asia/Tokyo": 9, "Asia/Hong_Kong": 8, "UTC": 0}
+            tz = timezone(timedelta(hours=offsets.get(config.LIMIT_RESET_TZ, 7)))
         return datetime.now(tz).date().isoformat()
 
     def used_today(self, account: str) -> int:
@@ -128,8 +128,8 @@ class BrowserPool:
             tz = ZoneInfo(config.LIMIT_RESET_TZ)
         except Exception:
             # Fallback to fixed offset if tzdata is not installed.
-            offsets = {"Asia/Tokyo": 9, "Asia/Hong_Kong": 8, "UTC": 0}
-            tz = timezone(timedelta(hours=offsets.get(config.LIMIT_RESET_TZ, 9)))
+            offsets = {"Asia/Ho_Chi_Minh": 7, "Asia/Tokyo": 9, "Asia/Hong_Kong": 8, "UTC": 0}
+            tz = timezone(timedelta(hours=offsets.get(config.LIMIT_RESET_TZ, 7)))
         now = datetime.now(tz)
         next_day = now.date() + timedelta(days=1)
         return datetime.combine(next_day, dt_time.min, tzinfo=tz).timestamp()

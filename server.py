@@ -24,13 +24,15 @@ if sys.platform == "win32":
 import hashlib
 import json
 import re
+import secrets
 import shutil
 import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -40,11 +42,85 @@ from add_account import add_account_flow
 from browser_pool import AllAccountsLimitedError, AllAccountsQuotaBlockedError, BrowserPool
 from media import download_reference_images, validate_reference_urls
 from store import PendingTaskLimitExceeded, TaskQuotaExceeded, TaskStore
+from web_auth import create_session_token, render_login_html, verify_session_token
 
 Path(config.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
 Path("web").mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="dola-pool", version="0.4.0")
+
+WEB_COOKIE = "dola_web_session"
+
+
+def _web_session_valid(request: Request) -> bool:
+    return bool(
+        config.WEB_PASSWORD
+        and config.WEB_SESSION_SECRET
+        and verify_session_token(
+            request.cookies.get(WEB_COOKIE),
+            config.WEB_USERNAME,
+            config.WEB_SESSION_SECRET,
+            max_age=config.WEB_SESSION_MAX_AGE,
+        )
+    )
+
+
+@app.middleware("http")
+async def protect_web_surface(request: Request, call_next):
+    path = request.url.path
+    public_path = path in {"/login", "/favicon.ico", "/health"} or path.startswith("/docs") \
+        or path.startswith("/openapi.json") or path.startswith("/v1/")
+    protected_path = path in {"/", "/web", "/web/"} or path.startswith("/api/") \
+        or path.startswith("/videos/") or path.startswith("/static/")
+    if config.WEB_PASSWORD and protected_path and not public_path and not _web_session_valid(request):
+        if path.startswith("/api/"):
+            return Response(
+                content=json.dumps({"detail": "login required"}),
+                status_code=401,
+                media_type="application/json",
+            )
+        return RedirectResponse("/login", status_code=303)
+    if _web_session_valid(request) and path.startswith("/api/admin/") and config.ADMIN_KEY:
+        headers = list(request.scope.get("headers", []))
+        headers = [(key, value) for key, value in headers if key.lower() != b"x-admin-key"]
+        headers.append((b"x-admin-key", config.ADMIN_KEY.encode("utf-8")))
+        request.scope["headers"] = headers
+    return await call_next(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def web_login_page(request: Request):
+    if _web_session_valid(request):
+        return RedirectResponse("/", status_code=303)
+    return HTMLResponse(render_login_html())
+
+
+@app.post("/login")
+async def web_login(username: str = Form(...), password: str = Form(...)):
+    valid = config.WEB_PASSWORD and secrets.compare_digest(username, config.WEB_USERNAME) \
+        and secrets.compare_digest(password, config.WEB_PASSWORD)
+    if not valid:
+        return HTMLResponse(
+            render_login_html("Tên đăng nhập hoặc mật khẩu không đúng."),
+            status_code=401,
+        )
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        WEB_COOKIE,
+        create_session_token(config.WEB_USERNAME, config.WEB_SESSION_SECRET),
+        max_age=config.WEB_SESSION_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+    )
+    return response
+
+
+@app.post("/logout")
+async def web_logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(WEB_COOKIE)
+    return response
 
 store = TaskStore(config.DB_PATH)
 pool = BrowserPool(max_concurrency=config.MAX_CONCURRENCY)
@@ -55,6 +131,7 @@ app.mount("/videos", StaticFiles(directory=config.DOWNLOAD_DIR), name="videos")
 JOBS: dict[str, dict] = {}
 BATCH_JOBS: dict[str, dict] = {}
 ACTIVE_BATCH_ID: str | None = None
+VIDEO_SEQUENCES: dict[str, dict] = {}
 
 SIZE_TO_RATIO = {
     "1280x720": "16:9", "1920x1080": "16:9",
@@ -122,8 +199,12 @@ def _env_client(key: str) -> dict:
     }
 
 
-def _auth(authorization):
+def _auth(authorization, web_session_valid: bool = False):
     """Returns client policy for caller; empty key enables dev mode."""
+    if web_session_valid:
+        client = _anonymous_client()
+        client["api_key_name"] = "Studio Web Session"
+        return client
     if not config.API_KEYS and not store.has_enabled_keys():
         return _anonymous_client()
     if not authorization or not authorization.startswith("Bearer "):
@@ -187,6 +268,33 @@ class TaskResponse(BaseModel):
     error: str | None = None
 
 
+class VideoSequenceSegment(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    model: str = "seedance-2.5"
+    duration: Literal[10, 15, 30] = 10
+    reference_images: list[str] = Field(default_factory=list)
+
+
+class VideoSequenceRequest(BaseModel):
+    name: str = Field(default="Chuỗi video", min_length=1, max_length=100)
+    common_prompt: str = ""
+    ratio: Literal["16:9", "9:16", "1:1", "4:3", "3:4"] = "16:9"
+    continuity: Literal["last_frame", "shared_reference", "none"] = "last_frame"
+    output_mode: Literal["segments", "merged", "both"] = "both"
+    reference_images: list[str] = Field(default_factory=list)
+    segments: list[VideoSequenceSegment] = Field(..., min_length=2, max_length=10)
+
+
+class VideoSequenceResponse(BaseModel):
+    id: str
+    status: str
+    name: str
+    current_segment: int = 0
+    segments: list[dict] = Field(default_factory=list)
+    merged_video_url: str | None = None
+    error: str | None = None
+
+
 def _resolve_ratio(size, ratio):
     if size and size in SIZE_TO_RATIO:
         return SIZE_TO_RATIO[size]
@@ -232,6 +340,140 @@ async def _run_task(task_id, model, prompt, ratio, duration, reference_images, c
             shutil.rmtree(reference_root, ignore_errors=True)
         if acquired:
             await key_limiter.release(api_key_hash)
+
+
+def _compose_segment_prompt(common_prompt: str, segment_prompt: str, index: int,
+                            total: int, continues: bool) -> str:
+    parts = []
+    if common_prompt.strip():
+        parts.append("YÊU CẦU NHẤT QUÁN TOÀN CHUỖI:\n" + common_prompt.strip())
+    parts.append(f"Cảnh {index}/{total}:")
+    if continues:
+        parts.append(
+            "Cảnh này tiếp diễn trực tiếp từ ảnh tham chiếu cuối cảnh trước. "
+            "Giữ nguyên nhân vật, khuôn mặt, trang phục, bối cảnh, ánh sáng và hướng chuyển động."
+        )
+    parts.append(segment_prompt.strip())
+    return "\n\n".join(parts)
+
+
+async def _run_media_command(*args: str) -> None:
+    process = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(stderr.decode("utf-8", errors="replace")[-1000:])
+
+
+async def _extract_last_frame(source: Path, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await _run_media_command(
+        "ffmpeg", "-y", "-sseof", "-0.15", "-i", str(source),
+        "-frames:v", "1", "-q:v", "2", str(target),
+    )
+    if not target.exists() or target.stat().st_size == 0:
+        raise RuntimeError("Không thể trích xuất frame cuối của video")
+    return target
+
+
+async def _merge_sequence_videos(sources: list[Path], target: Path, work_dir: Path) -> Path:
+    concat_file = work_dir / "concat.txt"
+    concat_file.write_text(
+        "".join(f"file '{str(path).replace(chr(39), chr(39) * 2)}'\n" for path in sources),
+        encoding="utf-8",
+    )
+    await _run_media_command(
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
+        "-c", "copy", "-movflags", "+faststart", str(target),
+    )
+    if not target.exists() or target.stat().st_size == 0:
+        raise RuntimeError("Không thể ghép các video trong chuỗi")
+    return target
+
+
+def _sequence_view(sequence: dict) -> VideoSequenceResponse:
+    return VideoSequenceResponse(
+        id=sequence["id"], status=sequence["status"], name=sequence["name"],
+        current_segment=sequence.get("current_segment", 0),
+        segments=sequence.get("segments", []),
+        merged_video_url=sequence.get("merged_video_url"), error=sequence.get("error"),
+    )
+
+
+async def _run_video_sequence(sequence_id: str, req: VideoSequenceRequest, client: dict) -> None:
+    sequence = VIDEO_SEQUENCES[sequence_id]
+    work_dir = Path(config.DOWNLOAD_DIR) / f".{sequence_id}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    generated_paths: list[Path] = []
+    previous_frame: Path | None = None
+    try:
+        sequence["status"] = "processing"
+        total = len(req.segments)
+        for offset, segment in enumerate(req.segments):
+            index = offset + 1
+            sequence["current_segment"] = index
+            item = sequence["segments"][offset]
+            item["status"] = "processing"
+            refs = list(segment.reference_images)
+            if req.continuity != "none":
+                refs = list(req.reference_images) + refs
+            download_root, ref_paths = await download_reference_images(refs, f"{sequence_id}_{index}")
+            try:
+                if req.continuity == "last_frame" and previous_frame:
+                    ref_paths.append(str(previous_frame))
+                prompt = _compose_segment_prompt(
+                    req.common_prompt, segment.prompt, index, total,
+                    req.continuity == "last_frame" and index > 1,
+                )
+                task_id = f"{sequence_id}_part_{index}"
+                store.create(
+                    task_id, segment.model, prompt, req.ratio, segment.duration,
+                    reference_images=json.dumps(refs, ensure_ascii=False),
+                    api_key_hash=client.get("api_key_hash"),
+                    api_key_name=client.get("api_key_name"),
+                    daily_limit=client.get("daily_limit", 0),
+                    concurrency_limit=client.get("concurrency_limit", 0),
+                    max_pending=config.MAX_PENDING_TASKS,
+                )
+                store.update(task_id, status="processing", started_at=time.time())
+                result = await pool.generate_video(
+                    prompt, req.ratio, segment.duration, segment.model,
+                    reference_image_paths=ref_paths,
+                )
+                local_path = Path(result["local_path"])
+                video_url = f"{config.PUBLIC_BASE}/videos/{local_path.name}"
+                generated_paths.append(local_path)
+                item.update(status="completed", task_id=task_id, video_url=video_url,
+                            account=result.get("account"))
+                store.update(task_id, status="completed", video_url=video_url,
+                             account=result.get("account"), finished_at=time.time())
+                if req.continuity == "last_frame" and index < total:
+                    previous_frame = await _extract_last_frame(
+                        local_path, work_dir / f"segment_{index}_last.jpg"
+                    )
+            except Exception as exc:
+                item["status"] = "failed"
+                item["error"] = str(exc)[:500]
+                task_id = item.get("task_id") or f"{sequence_id}_part_{index}"
+                if store.get(task_id):
+                    store.update(task_id, status="failed", error=str(exc)[:500],
+                                 finished_at=time.time())
+                raise
+            finally:
+                if download_root:
+                    shutil.rmtree(download_root, ignore_errors=True)
+
+        if req.output_mode in {"merged", "both"}:
+            merged = Path(config.DOWNLOAD_DIR) / f"{sequence_id}_merged.mp4"
+            await _merge_sequence_videos(generated_paths, merged, work_dir)
+            sequence["merged_video_url"] = f"{config.PUBLIC_BASE}/videos/{merged.name}"
+        sequence["status"] = "completed"
+    except Exception as exc:
+        sequence["status"] = "failed"
+        sequence["error"] = str(exc)[:500]
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 async def _resume_task(row: dict):
@@ -302,8 +544,12 @@ async def resume_incomplete_tasks():
 
 
 @app.post("/v1/videos/generations", response_model=TaskResponse)
-async def create_video(req: VideoGenRequest, authorization: str | None = Header(default=None)):
-    client = _auth(authorization)
+async def create_video(
+    req: VideoGenRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    client = _auth(authorization, web_session_valid=_web_session_valid(request))
     duration = req.duration or 10
     if duration not in SUPPORTED_DURATIONS:
         raise HTTPException(422, "Currently supports durations of 10s, 15s, and 30s")
@@ -352,9 +598,78 @@ async def create_video(req: VideoGenRequest, authorization: str | None = Header(
     return TaskResponse(id=task_id, status="queued", model=req.model, prompt=req.prompt)
 
 
+@app.post("/v1/video-sequences", response_model=VideoSequenceResponse)
+async def create_video_sequence(
+    req: VideoSequenceRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    client = _auth(authorization, web_session_valid=_web_session_valid(request))
+    if not pool.accounts:
+        raise HTTPException(503, "no account in pool")
+    for segment in req.segments:
+        if segment.duration not in client["allowed_durations"]:
+            raise HTTPException(
+                422, f"Current API Key is not allowed to generate {segment.duration}s videos"
+            )
+        model_key = segment.model.lower().replace("-", "_")
+        if model_key not in (
+            "seedance_2.0", "seedance_2.5", "seedance_v2.0", "seedance_v2.5",
+            "seedance_20", "seedance_25", "seedance_v20", "seedance_v25",
+        ):
+            raise HTTPException(422, "Supported models are seedance-2.0 and seedance-2.5")
+    try:
+        req.reference_images = await validate_reference_urls(req.reference_images)
+        for segment in req.segments:
+            segment.reference_images = await validate_reference_urls(segment.reference_images)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    sequence_id = "sequence_" + uuid.uuid4().hex
+    sequence = {
+        "id": sequence_id,
+        "name": req.name,
+        "status": "queued",
+        "current_segment": 0,
+        "segments": [
+            {
+                "index": index,
+                "prompt": segment.prompt,
+                "model": segment.model,
+                "duration": segment.duration,
+                "status": "queued",
+            }
+            for index, segment in enumerate(req.segments, start=1)
+        ],
+        "merged_video_url": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+    VIDEO_SEQUENCES[sequence_id] = sequence
+    asyncio.create_task(_run_video_sequence(sequence_id, req, client))
+    return _sequence_view(sequence)
+
+
+@app.get("/v1/video-sequences/{sequence_id}", response_model=VideoSequenceResponse)
+async def get_video_sequence(
+    sequence_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    _auth(authorization, web_session_valid=_web_session_valid(request))
+    sequence = VIDEO_SEQUENCES.get(sequence_id)
+    if not sequence:
+        raise HTTPException(404, "sequence not found")
+    return _sequence_view(sequence)
+
+
 @app.get("/v1/videos/{task_id}", response_model=TaskResponse)
-async def get_video(task_id: str, authorization: str | None = Header(default=None)):
-    client = _auth(authorization)
+async def get_video(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    client = _auth(authorization, web_session_valid=_web_session_valid(request))
     row = store.get_for_client(task_id, client["api_key_hash"])
     if not row:
         raise HTTPException(404, "task not found")
@@ -582,8 +897,8 @@ async def _run_headful_login_job(name: str):
             kwargs = {
                 "headless": False,
                 "args": LAUNCH_ARGS,
-                "locale": "ja-JP",
-                "timezone_id": "Asia/Tokyo",
+                "locale": config.BROWSER_LOCALE,
+                "timezone_id": config.BROWSER_TIMEZONE,
             }
             if config.PROXY:
                 kwargs["proxy"] = {"server": config.PROXY}

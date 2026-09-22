@@ -41,8 +41,12 @@ DB_PATH = os.getenv("DOLA_DB_PATH", "tasks.db")
 # Video download storage directory (served statically by FastAPI)
 DOWNLOAD_DIR = os.getenv("DOLA_DOWNLOAD_DIR", "downloads")
 
-# Explicit browser proxy (must point to JP/KR egress; empty = system proxy / direct)
+# Explicit browser proxy (empty = system proxy / direct)
 PROXY = os.getenv("DOLA_PROXY", "").strip()
+
+# Browser identity should match the machine/network region.
+BROWSER_LOCALE = os.getenv("DOLA_BROWSER_LOCALE", "vi-VN")
+BROWSER_TIMEZONE = os.getenv("DOLA_BROWSER_TIMEZONE", "Asia/Ho_Chi_Minh")
 
 # Run browser in headless mode (login always runs with head)
 HEADLESS = os.getenv("DOLA_HEADLESS", "1") == "1"
@@ -53,12 +57,18 @@ PUBLIC_BASE = os.getenv("DOLA_PUBLIC_BASE", f"http://127.0.0.1:{PORT}")
 # Admin web dashboard password (empty = no auth)
 ADMIN_KEY = os.getenv("DOLA_ADMIN_KEY", "")
 
+# Browser login protecting the dashboard, admin APIs, and downloaded media.
+WEB_USERNAME = os.getenv("DOLA_WEB_USERNAME", "admin")
+WEB_PASSWORD = os.getenv("DOLA_WEB_PASSWORD", "")
+WEB_SESSION_SECRET = os.getenv("DOLA_WEB_SESSION_SECRET", "")
+WEB_SESSION_MAX_AGE = int(os.getenv("DOLA_WEB_SESSION_MAX_AGE", str(12 * 60 * 60)))
+
 # Dola 30s / Watermark Removal Chromium extension path
 EXTENSION_DIR = os.getenv("DOLA_EXTENSION_DIR", "extensions/dola30")
 EXTENSION_ENABLED = os.getenv("DOLA_EXTENSION_ENABLED", "1") == "1"
 
-# Daily quota reset timezone (Japan midnight by default)
-LIMIT_RESET_TZ = os.getenv("DOLA_LIMIT_RESET_TZ", "Asia/Tokyo")
+# Daily quota reset timezone (Vietnam midnight by default)
+LIMIT_RESET_TZ = os.getenv("DOLA_LIMIT_RESET_TZ", "Asia/Ho_Chi_Minh")
 
 # Conservative credit check before video generation (default 2 points)
 VIDEO_REQUIRED_POINTS = int(os.getenv("DOLA_VIDEO_REQUIRED_POINTS", "2"))

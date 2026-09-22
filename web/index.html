@@ -787,10 +787,19 @@ tr:hover td { background: var(--color-paper-hover); }
           <span class="badge b-blue">Seedance Engine</span>
         </div>
 
+        <!-- Generation Mode -->
+        <div class="form-group">
+          <div class="form-label"><span>Chế độ tạo</span></div>
+          <select id="generation_mode" class="form-control" onchange="toggleGenerationMode()">
+            <option value="single" selected>Video đơn</option>
+            <option value="sequence">Chuỗi video tùy chỉnh</option>
+          </select>
+        </div>
+
         <!-- Prompt Textarea -->
         <div class="form-group">
           <div class="form-label">
-            <span>Mô tả cảnh quay (Prompt) <span style="color:var(--color-danger)">*</span></span>
+            <span id="gen_prompt_label">Mô tả cảnh quay (Prompt) <span style="color:var(--color-danger)">*</span></span>
             <span id="prompt_char_count" style="font-family:var(--font-mono);font-size:11px;color:var(--color-ink-3)">0 ký tự</span>
           </div>
           <textarea id="gen_prompt" class="form-control" style="min-height:108px;resize:vertical" placeholder="Ví dụ: Một chú mèo con màu cam chạy nhảy trên đồng cỏ hoa vàng, ánh nắng hoàng hôn điện ảnh chiếu nghiêng, 4k ultra-detailed, cinematic lighting..." oninput="updatePromptCount();updateApiPayloadPreview()"></textarea>
@@ -875,6 +884,40 @@ tr:hover td { background: var(--color-paper-hover); }
           </div>
         </div>
 
+        <!-- Configurable Video Sequence -->
+        <div id="sequence_options" style="display:none;margin-top:20px;padding-top:18px;border-top:1px solid var(--color-rule)">
+          <div class="form-group">
+            <div class="form-label"><span>Tên chuỗi</span><span id="sequence_quota_hint" style="font-family:var(--font-mono);font-size:11px;color:var(--color-ink-3)"></span></div>
+            <input id="sequence_name" class="form-control" value="Chuỗi video mới" oninput="updateApiPayloadPreview()">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px" class="form-group">
+            <div>
+              <div class="form-label"><span>Cách giữ liên tục</span></div>
+              <select id="sequence_continuity" class="form-control" onchange="updateApiPayloadPreview()">
+                <option value="last_frame" selected>Frame cuối đoạn trước</option>
+                <option value="shared_reference">Dùng chung ảnh tham chiếu</option>
+                <option value="none">Không nối / độc lập</option>
+              </select>
+            </div>
+            <div>
+              <div class="form-label"><span>Kết quả đầu ra</span></div>
+              <select id="sequence_output_mode" class="form-control" onchange="updateApiPayloadPreview()">
+                <option value="both" selected>Video riêng + bản ghép</option>
+                <option value="segments">Chỉ giữ từng video</option>
+                <option value="merged">Chỉ cần bản ghép</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div>
+              <div class="form-label" style="margin:0"><span>Các đoạn trong chuỗi</span></div>
+              <div style="font-size:11.5px;color:var(--color-ink-3)">Mỗi đoạn tùy chọn model, thời lượng và ảnh riêng.</div>
+            </div>
+            <button type="button" class="btn btn-sm" onclick="addSequenceSegment()">＋ Thêm đoạn</button>
+          </div>
+          <div id="sequence_segments" style="display:flex;flex-direction:column;gap:10px"></div>
+        </div>
+
         <!-- Primary Trigger Action -->
         <div style="margin-top:22px;display:flex;align-items:center;gap:14px">
           <button id="btn_submit_gen" class="btn btn-p" style="padding:10px 26px;font-size:14px;font-weight:600" onclick="submitGenerateVideo()">
@@ -924,7 +967,7 @@ tr:hover td { background: var(--color-paper-hover); }
             <div style="display:flex;align-items:center;gap:8px">
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-accent)"></span>
               <span style="font-weight:700;color:var(--color-ink-1);font-size:12.5px;letter-spacing:-0.01em">API PAYLOAD</span>
-              <span style="font-family:var(--font-mono);font-size:11px;font-weight:600;background:var(--color-paper-3);border:1px solid var(--color-rule-strong);color:var(--color-ink-2);padding:2px 7px;border-radius:4px">POST /v1/videos/generations</span>
+              <span id="api_endpoint_label" style="font-family:var(--font-mono);font-size:11px;font-weight:600;background:var(--color-paper-3);border:1px solid var(--color-rule-strong);color:var(--color-ink-2);padding:2px 7px;border-radius:4px">POST /v1/videos/generations</span>
             </div>
             <button class="btn btn-sm" onclick="copyCurlSnippet()" style="font-family:var(--font-mono);font-size:11px;padding:3px 10px;gap:5px">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -1256,6 +1299,7 @@ let adminKey = localStorage.getItem(LS_KEY) || '';
 let autoRefresh = true, curTab = 'create', timer = null;
 let activePollTimer = null, currentVideoUrl = '';
 let referenceImagesList = [];
+let sequenceSegments = [];
 
 function q(s) { return document.querySelector(s); }
 
@@ -1322,10 +1366,10 @@ async function api(path, opt = {}) {
   if (adminKey) h['X-Admin-Key'] = adminKey;
   if (opt.body && !h['Content-Type']) h['Content-Type'] = 'application/json';
   
-  const res = await fetch(path, { credentials: 'omit', ...opt, headers: h });
+  const res = await fetch(path, { credentials: 'include', ...opt, headers: h });
   if (res.status === 401) {
-    promptAdminKey();
-    throw new Error('Cần nhập mã X-Admin-Key');
+    window.location.assign('/login');
+    throw new Error('Phiên đăng nhập đã hết hạn');
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -1403,37 +1447,122 @@ function updatePromptCount() {
   q('#prompt_char_count').textContent = `${val.length} ký tự`;
 }
 
-function updateApiPayloadPreview() {
-  const p = q('#gen_prompt').value;
-  const m = q('#gen_model').value;
-  const r = q('#gen_ratio').value;
-  const d = parseInt(q('#gen_duration').value);
-  const pendingInput = q('#gen_ref_input') ? q('#gen_ref_input').value.trim() : '';
-  let refs = [...referenceImagesList];
-  if (pendingInput && (pendingInput.startsWith('http://') || pendingInput.startsWith('https://')) && !refs.includes(pendingInput)) {
-    refs.push(pendingInput);
+function toggleGenerationMode() {
+  const isSequence = q('#generation_mode').value === 'sequence';
+  q('#sequence_options').style.display = isSequence ? 'block' : 'none';
+  q('#gen_prompt_label').innerHTML = isSequence
+    ? 'Prompt chung / khóa nhất quán'
+    : 'Mô tả cảnh quay (Prompt) <span style="color:var(--color-danger)">*</span>';
+  q('#btn_submit_gen').lastChild.textContent = isSequence ? ' Khởi Tạo Chuỗi Video' : ' Khởi Tạo Render Video';
+  const endpointLabel = q('#api_endpoint_label');
+  if (endpointLabel) endpointLabel.textContent = isSequence ? 'POST /v1/video-sequences' : 'POST /v1/videos/generations';
+  if (isSequence && sequenceSegments.length < 2) {
+    addSequenceSegment();
+    addSequenceSegment();
   }
+  updateApiPayloadPreview();
+}
 
-  const payload = {
-    model: m,
-    prompt: p || "A cinematic shot of a futuristic cyberpunk skyline...",
-    ratio: r,
-    duration: d,
-    reference_images: refs
+function addSequenceSegment(data = {}) {
+  if (sequenceSegments.length >= 10) return toast('Một chuỗi tối đa 10 đoạn.', 'error');
+  sequenceSegments.push({
+    prompt: data.prompt || '',
+    model: data.model || q('#gen_model').value || 'seedance-2.5',
+    duration: data.duration || parseInt(q('#gen_duration').value) || 10,
+    reference_images: data.reference_images || []
+  });
+  renderSequenceSegments();
+}
+
+function removeSequenceSegment(index) {
+  if (sequenceSegments.length <= 2) return toast('Chuỗi cần ít nhất 2 đoạn.', 'error');
+  sequenceSegments.splice(index, 1);
+  renderSequenceSegments();
+}
+
+function duplicateSequenceSegment(index) {
+  if (sequenceSegments.length >= 10) return toast('Một chuỗi tối đa 10 đoạn.', 'error');
+  sequenceSegments.splice(index + 1, 0, {...sequenceSegments[index], reference_images: [...sequenceSegments[index].reference_images]});
+  renderSequenceSegments();
+}
+
+function updateSequenceSegment(index, field, value) {
+  if (!sequenceSegments[index]) return;
+  sequenceSegments[index][field] = field === 'duration' ? parseInt(value) : value;
+  updateApiPayloadPreview();
+}
+
+function renderSequenceSegments() {
+  const container = q('#sequence_segments');
+  if (!container) return;
+  container.innerHTML = sequenceSegments.map((segment, index) => `
+    <div style="border:1px solid var(--color-rule);border-radius:var(--radius-md);padding:12px;background:var(--color-paper-3)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-family:var(--font-display);font-weight:700">Đoạn ${index + 1}</span>
+        <div style="display:flex;gap:6px">
+          <button type="button" class="btn btn-sm" onclick="duplicateSequenceSegment(${index})">Nhân bản</button>
+          <button type="button" class="btn btn-sm" onclick="removeSequenceSegment(${index})" style="color:var(--color-danger)">Xóa</button>
+        </div>
+      </div>
+      <textarea class="form-control" style="min-height:76px;resize:vertical" placeholder="Mô tả hành động riêng của đoạn ${index + 1}..." oninput="updateSequenceSegment(${index},'prompt',this.value)">${esc(segment.prompt)}</textarea>
+      <div style="display:grid;grid-template-columns:1fr 110px;gap:8px;margin-top:8px">
+        <select class="form-control" onchange="updateSequenceSegment(${index},'model',this.value)">
+          <option value="seedance-2.5" ${segment.model === 'seedance-2.5' ? 'selected' : ''}>Seedance 2.5</option>
+          <option value="seedance-2.0" ${segment.model === 'seedance-2.0' ? 'selected' : ''}>Seedance 2.0</option>
+        </select>
+        <select class="form-control" onchange="updateSequenceSegment(${index},'duration',this.value)">
+          ${[10,15,30].map(d => `<option value="${d}" ${segment.duration === d ? 'selected' : ''}>${d} giây</option>`).join('')}
+        </select>
+      </div>
+      <input class="form-control" style="margin-top:8px" value="${esc((segment.reference_images || []).join(', '))}" placeholder="Ảnh riêng của đoạn (URL, cách nhau bằng dấu phẩy)" oninput="updateSequenceSegment(${index},'reference_images',this.value.split(',').map(x=>x.trim()).filter(Boolean))">
+    </div>
+  `).join('');
+  const hint = q('#sequence_quota_hint');
+  if (hint) hint.textContent = `${sequenceSegments.length} lượt render`;
+  updateApiPayloadPreview();
+}
+
+function collectReferenceImages() {
+  const pendingInput = q('#gen_ref_input') ? q('#gen_ref_input').value.trim() : '';
+  const refs = [...referenceImagesList];
+  if (pendingInput && (pendingInput.startsWith('http://') || pendingInput.startsWith('https://')) && !refs.includes(pendingInput)) refs.push(pendingInput);
+  return refs;
+}
+
+function buildGenerationPayload() {
+  const mode = q('#generation_mode').value;
+  const prompt = q('#gen_prompt').value.trim();
+  if (mode === 'sequence') {
+    return {
+      name: q('#sequence_name').value.trim() || 'Chuỗi video',
+      common_prompt: prompt,
+      ratio: q('#gen_ratio').value,
+      continuity: q('#sequence_continuity').value,
+      output_mode: q('#sequence_output_mode').value,
+      reference_images: collectReferenceImages(),
+      segments: sequenceSegments
+    };
+  }
+  return {
+    model: q('#gen_model').value,
+    prompt: prompt || "A cinematic shot of a futuristic cyberpunk skyline...",
+    ratio: q('#gen_ratio').value,
+    duration: parseInt(q('#gen_duration').value),
+    reference_images: collectReferenceImages()
   };
+}
 
+function updateApiPayloadPreview() {
   const el = q('#api_payload_preview');
-  if (el) el.textContent = JSON.stringify(payload, null, 2);
+  if (el) el.textContent = JSON.stringify(buildGenerationPayload(), null, 2);
 }
 
 function copyCurlSnippet() {
-  const p = q('#gen_prompt').value || "A cinematic shot...";
-  const m = q('#gen_model').value;
-  const r = q('#gen_ratio').value;
-  const d = parseInt(q('#gen_duration').value);
-  const curl = `curl -X POST http://127.0.0.1:8000/v1/videos/generations \\
+  const isSequence = q('#generation_mode').value === 'sequence';
+  const endpoint = isSequence ? '/v1/video-sequences' : '/v1/videos/generations';
+  const curl = `curl -X POST http://127.0.0.1:8000${endpoint} \\
   -H "Content-Type: application/json" \\
-  -d '${JSON.stringify({ model: m, prompt: p, ratio: r, duration: d, reference_images: referenceImagesList })}'`;
+  -d '${JSON.stringify(buildGenerationPayload())}'`;
   copy(curl);
   toast('Đã sao chép cURL snippet vào clipboard!', 'success');
 }
@@ -1552,27 +1681,14 @@ async function checkAccountWarning() {
 }
 
 async function submitGenerateVideo() {
-  const model = q('#gen_model').value;
-  const prompt = q('#gen_prompt').value.trim();
-  if (!prompt) return toast('Vui lòng nhập mô tả (Prompt) video bạn muốn tạo!', 'error');
-  const ratio = q('#gen_ratio').value;
-  const duration = parseInt(q('#gen_duration').value);
-
-  const pendingInput = q('#gen_ref_input') ? q('#gen_ref_input').value.trim() : '';
-  let finalRefImages = [...referenceImagesList];
-  if (pendingInput && (pendingInput.startsWith('http://') || pendingInput.startsWith('https://'))) {
-    if (!finalRefImages.includes(pendingInput) && finalRefImages.length < 30) {
-      finalRefImages.push(pendingInput);
-    }
+  const isSequence = q('#generation_mode').value === 'sequence';
+  const body = buildGenerationPayload();
+  if (!isSequence && !q('#gen_prompt').value.trim()) return toast('Vui lòng nhập mô tả (Prompt) video bạn muốn tạo!', 'error');
+  if (isSequence) {
+    if (sequenceSegments.length < 2) return toast('Chuỗi cần ít nhất 2 đoạn.', 'error');
+    const emptyIndex = sequenceSegments.findIndex(segment => !segment.prompt.trim());
+    if (emptyIndex >= 0) return toast(`Vui lòng nhập prompt cho đoạn ${emptyIndex + 1}.`, 'error');
   }
-
-  const body = {
-    model: model,
-    prompt: prompt,
-    ratio: ratio,
-    duration: duration,
-    reference_images: finalRefImages
-  };
 
   const btn = q('#btn_submit_gen');
   btn.disabled = true;
@@ -1586,7 +1702,8 @@ async function submitGenerateVideo() {
   hide('gen_video_container');
 
   try {
-    const resp = await fetch('/v1/videos/generations', {
+    const endpoint = isSequence ? '/v1/video-sequences' : '/v1/videos/generations';
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -1594,8 +1711,9 @@ async function submitGenerateVideo() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
 
-    q('#gen_msg').textContent = 'Task ID: ' + data.id;
-    pollVideoTask(data.id);
+    q('#gen_msg').textContent = (isSequence ? 'Sequence ID: ' : 'Task ID: ') + data.id;
+    if (isSequence) pollVideoSequence(data.id);
+    else pollVideoTask(data.id);
   } catch (err) {
     btn.disabled = false;
     q('#gen_msg').textContent = '';
@@ -1606,6 +1724,51 @@ async function submitGenerateVideo() {
     q('#gen_status_box').style.border = '1px solid var(--color-danger-border)';
     q('#gen_status_text').innerHTML = '<span style="color:var(--color-danger)"><b>Lỗi:</b> ' + esc(err.message) + '</span>';
   }
+}
+
+function pollVideoSequence(sequenceId) {
+  if (activePollTimer) clearInterval(activePollTimer);
+  let elapsed = 0;
+  activePollTimer = setInterval(async () => {
+    elapsed += 3;
+    try {
+      const resp = await fetch(`/v1/video-sequences/${sequenceId}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Không đọc được trạng thái chuỗi');
+      const completed = (data.segments || []).filter(s => s.status === 'completed').length;
+      const total = (data.segments || []).length;
+      if (data.status === 'queued' || data.status === 'processing') {
+        q('#gen_status_text').innerHTML = `Đang render chuỗi: <b>${completed}/${total}</b> đoạn hoàn tất · hiện tại đoạn ${data.current_segment || 1} (${elapsed}s)`;
+      } else if (data.status === 'completed') {
+        clearInterval(activePollTimer);
+        q('#btn_submit_gen').disabled = false;
+        q('#gen_spinner').style.display = 'none';
+        q('#gen_status_badge').className = 'badge b-green';
+        q('#gen_status_badge').textContent = 'Completed';
+        q('#gen_status_box').style.background = 'var(--color-success-subtle)';
+        q('#gen_status_box').style.border = '1px solid var(--color-success-border)';
+        q('#gen_status_text').innerHTML = `<span style="color:var(--color-success);font-weight:600">✓ Chuỗi ${total} đoạn đã hoàn tất!</span>`;
+        const playable = data.merged_video_url || (data.segments[data.segments.length - 1] || {}).video_url;
+        if (playable) {
+          currentVideoUrl = playable;
+          q('#gen_video_player').src = playable;
+          q('#gen_download_btn').href = playable;
+          q('#gen_download_btn').download = `${sequenceId}.mp4`;
+          show('gen_video_container');
+        }
+        toast('Render chuỗi video thành công!', 'success');
+      } else if (data.status === 'failed') {
+        clearInterval(activePollTimer);
+        q('#btn_submit_gen').disabled = false;
+        q('#gen_spinner').style.display = 'none';
+        q('#gen_status_badge').className = 'badge b-red';
+        q('#gen_status_badge').textContent = 'Failed';
+        q('#gen_status_text').innerHTML = `<span style="color:var(--color-danger)"><b>Chuỗi thất bại ở đoạn ${data.current_segment}:</b> ${esc(data.error || 'Không rõ lỗi')}</span>`;
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }, 3000);
 }
 
 function pollVideoTask(taskId) {

@@ -222,7 +222,7 @@ async def add_account_flow(account: str, email: str, password: str, secret: str)
 
     async with async_playwright() as p:
         kwargs = {"headless": False, "args": LAUNCH_ARGS,
-                  "locale": "ja-JP", "timezone_id": "Asia/Tokyo"}
+                  "locale": config.BROWSER_LOCALE, "timezone_id": config.BROWSER_TIMEZONE}
         if config.PROXY:
             kwargs["proxy"] = {"server": config.PROXY}
         context = await p.chromium.launch_persistent_context(str(profile_dir), **kwargs)

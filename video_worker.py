@@ -19,10 +19,10 @@ POLL_JS = r"""
 async ({conversationId, msToken, fp}) => {
   // Current protocol: uplink_body.pull_singe_chain_uplink_body
   const params = new URLSearchParams({
-    version_code: "20800", language: "ja", device_platform: "web",
+    version_code: "20800", language: "vi", device_platform: "web",
     doubao_device_platform: "web", aid: "495671", real_aid: "495671",
     pkg_type: "release_version", pc_version: "3.32.61", doubao_pc_version: "3.32.61",
-    region: "JP", sys_region: "JP", samantha_web: "1", web_platform: "browser",
+    region: "VN", sys_region: "VN", samantha_web: "1", web_platform: "browser",
     "use-olympus-account": "1", web_tab_id: crypto.randomUUID(),
   });
 

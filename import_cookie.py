@@ -127,8 +127,8 @@ async def import_account_from_data(account_name: str, data: dict | list | str) -
         kwargs = {
             "headless": True,
             "args": LAUNCH_ARGS,
-            "locale": "ja-JP",
-            "timezone_id": "Asia/Tokyo",
+            "locale": config.BROWSER_LOCALE,
+            "timezone_id": config.BROWSER_TIMEZONE,
         }
         if config.PROXY:
             kwargs["proxy"] = {"server": config.PROXY}

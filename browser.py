@@ -38,8 +38,8 @@ async def launch_account_context(p, account: str, headless: bool = None, use_ext
     kwargs = {
         "headless": launch_headless,
         "args": args,
-        "locale": "ja-JP",
-        "timezone_id": "Asia/Tokyo",
+        "locale": config.BROWSER_LOCALE,
+        "timezone_id": config.BROWSER_TIMEZONE,
     }
     if config.PROXY:
         kwargs["proxy"] = {"server": config.PROXY}

@@ -33,18 +33,26 @@ class CreditInsufficientError(Exception):
     """Insufficient points prior to generation."""
 
 
-VIDEO_BTN = "text=動画を作成"          # Entry point button in ja-JP locale
+VIDEO_BUTTON_RE = re.compile(r"^(Tạo video|Create video|動画を作成)$", re.IGNORECASE)
+SETTINGS_SUMMARY_RE = re.compile(
+    r"^(Tự động|Auto|自動|\d+:\d+)\s*·\s*\d+\s*(?:giây|seconds?|秒)$",
+    re.IGNORECASE,
+)
 CAPTCHA_FRAME_KEY = "bdcaptcha.html"   # Captcha verifycenter iframe
+
+
+def duration_option_re(duration: int):
+    return re.compile(rf"^{duration}\s*(?:giây|seconds?|秒)$", re.IGNORECASE)
 
 
 # Read-only balance pre-check from recent conversations
 BALANCE_JS = r"""
 async ({msToken, fp}) => {
   const params = new URLSearchParams({
-    version_code: "20800", language: "ja", device_platform: "web",
+    version_code: "20800", language: "vi", device_platform: "web",
     doubao_device_platform: "web", aid: "495671", real_aid: "495671",
     pkg_type: "release_version", pc_version: "3.32.62", doubao_pc_version: "3.32.62",
-    region: "JP", sys_region: "JP", samantha_web: "1", web_platform: "browser",
+    region: "VN", sys_region: "VN", samantha_web: "1", web_platform: "browser",
     "use-olympus-account": "1", web_tab_id: crypto.randomUUID(),
   });
   if (msToken) params.set("msToken", msToken);
@@ -370,7 +378,8 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             await _preflight_balance(page, ms_token, fp, config.VIDEO_REQUIRED_POINTS)
 
             # ---- UI Submission ----
-            await page.click(VIDEO_BTN)
+            video_button = page.get_by_text(VIDEO_BUTTON_RE, exact=False).first
+            await video_button.click(timeout=5000)
             await page.wait_for_timeout(1500)
             if reference_image_paths:
                 await attach_reference_images(page, reference_image_paths)
@@ -378,14 +387,17 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             try:
                 current_model = None
                 current_label = ""
-                for label in ("モデル 2.5", "モデル 2.0高速", "モデル 2.0"):
+                for label in ("Mô hình 2.5", "Model 2.5", "モデル 2.5",
+                              "Mô hình 2.0", "Model 2.0 Fast", "モデル 2.0高速", "モデル 2.0"):
                     loc = page.get_by_text(label, exact=True).first
                     if await loc.count() and await loc.is_visible():
                         current_model = loc
                         current_label = label
                         break
                 if current_model is None:
-                    current_model = page.get_by_text(re.compile(r"^モデル "), exact=False).first
+                    current_model = page.get_by_text(
+                        re.compile(r"^(Mô hình|Model|モデル) ", re.IGNORECASE), exact=False
+                    ).first
 
                 need_switch = True
                 if current_label:
@@ -414,21 +426,31 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
                 print(f"  (Failed to set model {model_key}: {str(e)[:120]})", flush=True)
             if ratio:
                 try:
-                    await page.click("text=比率", timeout=3000)
+                    settings_button = page.get_by_text(SETTINGS_SUMMARY_RE, exact=False).first
+                    await settings_button.click(timeout=5000)
                     await page.wait_for_timeout(500)
-                    await page.click(f"text={ratio}", timeout=3000)
+                    ratio_option = page.get_by_text(ratio, exact=True).last
+                    if not await ratio_option.count() or not await ratio_option.is_visible():
+                        raise RuntimeError(f"Requested ratio {ratio} not available in Dola UI")
+                    await ratio_option.click(timeout=3000)
                 except Exception as e:
-                    print(f"  (Failed to set ratio, using default: {str(e)[:80]})", flush=True)
+                    raise RuntimeError(
+                        f"Requested ratio {ratio} not available in Dola UI; task was not submitted: {e}"
+                    ) from e
             if duration:
                 try:
-                    await page.click(f"text={duration}s", timeout=3000)
-                except Exception:
-                    try:  # Open duration dropdown
-                        await page.get_by_text(re.compile(r"^\d+s$")).first.click(timeout=3000)
+                    settings_button = page.get_by_text(SETTINGS_SUMMARY_RE, exact=False).first
+                    if await settings_button.get_attribute("aria-expanded") != "true":
+                        await settings_button.click(timeout=5000)
                         await page.wait_for_timeout(500)
-                        await page.click(f"text={duration}s", timeout=3000)
-                    except Exception as e:
-                        print(f"  (Failed to set duration, using default: {str(e)[:80]})", flush=True)
+                    duration_option = page.get_by_text(duration_option_re(duration), exact=False).last
+                    if not await duration_option.count() or not await duration_option.is_visible():
+                        raise RuntimeError(f"Requested duration {duration}s not available in Dola UI")
+                    await duration_option.click(timeout=3000)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Requested duration {duration}s not available in Dola UI; task was not submitted: {e}"
+                    ) from e
             box = await page.query_selector("textarea") or await page.query_selector('[contenteditable="true"]')
             await box.click()
             await page.keyboard.type(prompt, delay=100)

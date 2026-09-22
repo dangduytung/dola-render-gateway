@@ -4,5 +4,6 @@ aiohttp
 pydantic
 patchright
 python-dotenv
+python-multipart
 pillow
 opencv-python
